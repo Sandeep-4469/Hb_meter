@@ -195,6 +195,20 @@ try:
 
     try:
         pred = predict_lite(model, name, csv_path)
+        
+        # Apply calibration if available
+        try:
+            import json
+            from calibration_utils import calibrate_prediction
+            
+            patient_info = {}
+            if os.path.exists("patient_info.json"):
+                with open("patient_info.json", "r") as f:
+                    patient_info = json.load(f)
+            
+            pred = calibrate_prediction(pred, patient_info)
+        except Exception as cal_err:
+            print(f"Calibration warning: {cal_err}. Using raw prediction.")
     except Exception as e:
         print(f"Error during prediction: {e}")
         logging.error(f"Error during prediction: {e}")
