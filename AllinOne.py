@@ -6,7 +6,6 @@ import pandas as pd
 import numpy as np
 import os
 import cv2
-import csv
 import itertools
 import time
 import subprocess
@@ -321,12 +320,9 @@ def generate_csv(video_path, csv_path, name):
         for segment, (segment_start, segment_end) in segment_ranges.items():
             segment_end = min(segment_end, total_frames)
             segment_start = min(segment_start, segment_end)
-            
-            # Temporary storage for ROI pixels of all frames in the current segment
-            segment_pixels = {ch: [] for ch in channels}
-            
-            video.set(cv2.CAP_PROP_POS_FRAMES, segment_start)
+            channel_histograms = {ch: [] for ch in channels}
             frame_count = 0
+            video.set(cv2.CAP_PROP_POS_FRAMES, segment_start)
 
             while frame_count < segment_end - segment_start:
                 ret, frame = video.read()
@@ -337,53 +333,30 @@ def generate_csv(video_path, csv_path, name):
                 roi = frame[roi_top:roi_bottom, roi_left:roi_right]
                 roi = cv2.GaussianBlur(roi, (7, 7), 0)
                 
-                roi_rgb = cv2.cvtColor(roi, cv2.COLOR_BGR2RGB)
-                roi_hsv = cv2.cvtColor(roi_rgb, cv2.COLOR_RGB2HSV)
-                roi_lab = cv2.cvtColor(roi_rgb, cv2.COLOR_RGB2LAB)
+                roi_rgb  = cv2.cvtColor(roi, cv2.COLOR_BGR2RGB)
+                roi_hsv  = cv2.cvtColor(roi_rgb, cv2.COLOR_RGB2HSV)
+                roi_lab  = cv2.cvtColor(roi_rgb, cv2.COLOR_RGB2LAB)
                 roi_gray = cv2.cvtColor(roi_rgb, cv2.COLOR_RGB2GRAY)
                 
                 r, g, b = cv2.split(roi_rgb)
                 h, s, v = cv2.split(roi_hsv)
                 l, a, _ = cv2.split(roi_lab)
                 
-                # Append all pixels in the ROI (fixing the 1-pixel column extraction bug)
-                segment_pixels['R'].append(r.flatten())
-                segment_pixels['G'].append(g.flatten())
-                segment_pixels['B'].append(b.flatten())
-                segment_pixels['H'].append(h.flatten())
-                segment_pixels['S'].append(s.flatten())
-                segment_pixels['V'].append(v.flatten())
-                segment_pixels['L'].append(l.flatten())
-                segment_pixels['A'].append(a.flatten())
-                segment_pixels['Grayscale'].append(roi_gray.flatten())
-                
+                for ch_name, ch_data in zip(channels, [r, g, b, h, s, v, l, a, roi_gray]):
+                    # Fix Hue channel range to [0, 180] (OpenCV standard), other channels to [0, 256]
+                    ch_range = (0, 180) if ch_name == 'H' else (0, 256)
+                    hist, _ = np.histogram(ch_data.flatten(), bins=256, range=ch_range, density=True)
+                    channel_histograms[ch_name].append(hist)
                 frame_count += 1
 
-            # Compute normalized average histogram per channel across the segment
-            histograms = {}
-            for channel in channels:
-                channel_histograms = []
-                # Fix Hue channel range to [0, 180] (OpenCV standard), other channels to [0, 256]
-                ch_range = (0, 180) if channel == 'H' else (0, 256)
-                
-                for frame_data in segment_pixels[channel]:
-                    if len(frame_data) > 0:
-                        hist, _ = np.histogram(frame_data, bins=256, range=ch_range, density=True)
-                        channel_histograms.append(hist)
-                        
-                if channel_histograms:
-                    histograms[channel] = np.mean(channel_histograms, axis=0)
-                else:
-                    histograms[channel] = np.zeros(256)
-                    
+            histograms = {ch: np.mean(vals, axis=0) if vals else np.zeros(256)
+                          for ch, vals in channel_histograms.items()}
             histogram_df = pd.DataFrame(histograms)
             # Flatten with Fortran order to preserve the column-major structure expected by the model
             flattened = histogram_df.to_numpy().reshape(1, -1, order='F')
-            
             output_path = os.path.join(csv_path, f"{video_name}_{segment}_flattened.csv")
             pd.DataFrame(flattened).to_csv(output_path, index=False, header=False)
             output_paths[segment] = output_path
-            
         return video_name, output_paths
     except Exception as e:
         print(f"[Error] Failed on {video_name}: {e}")
