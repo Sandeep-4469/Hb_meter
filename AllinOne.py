@@ -314,10 +314,12 @@ def generate_csv(video_path, csv_path, name):
             'yellow': (2 * frames_per_segment, min(3 * frames_per_segment, total_frames))
         }
 
+        # Wavelength channel definitions
+        channels = ['R', 'G', 'B', 'H', 'S', 'V', 'L', 'A', 'Grayscale']
+
         for segment, (segment_start, segment_end) in segment_ranges.items():
             segment_end = min(segment_end, total_frames)
             segment_start = min(segment_start, segment_end)
-            channels = ['R', 'G', 'B', 'H', 'S', 'V', 'L', 'A', 'Grayscale']
             channel_histograms = {ch: [] for ch in channels}
             frame_count = 0
             video.set(cv2.CAP_PROP_POS_FRAMES, segment_start)
@@ -326,22 +328,31 @@ def generate_csv(video_path, csv_path, name):
                 ret, frame = video.read()
                 if not ret:
                     break
+                
+                # Crop ROI and apply Gaussian Blur to reduce high-frequency sensor noise
                 roi = frame[roi_top:roi_bottom, roi_left:roi_right]
+                roi = cv2.GaussianBlur(roi, (7, 7), 0)
+                
                 roi_rgb  = cv2.cvtColor(roi, cv2.COLOR_BGR2RGB)
                 roi_hsv  = cv2.cvtColor(roi_rgb, cv2.COLOR_RGB2HSV)
                 roi_lab  = cv2.cvtColor(roi_rgb, cv2.COLOR_RGB2LAB)
                 roi_gray = cv2.cvtColor(roi_rgb, cv2.COLOR_RGB2GRAY)
+                
                 r, g, b = cv2.split(roi_rgb)
                 h, s, v = cv2.split(roi_hsv)
                 l, a, _ = cv2.split(roi_lab)
+                
                 for ch_name, ch_data in zip(channels, [r, g, b, h, s, v, l, a, roi_gray]):
-                    hist, _ = np.histogram(ch_data.flatten(), bins=256, range=(0, 256), density=True)
+                    # Fix Hue channel range to [0, 180] (OpenCV standard), other channels to [0, 256]
+                    ch_range = (0, 180) if ch_name == 'H' else (0, 256)
+                    hist, _ = np.histogram(ch_data.flatten(), bins=256, range=ch_range, density=True)
                     channel_histograms[ch_name].append(hist)
                 frame_count += 1
 
             histograms = {ch: np.mean(vals, axis=0) if vals else np.zeros(256)
                           for ch, vals in channel_histograms.items()}
             histogram_df = pd.DataFrame(histograms)
+            # Flatten with Fortran order to preserve the column-major structure expected by the model
             flattened = histogram_df.to_numpy().reshape(1, -1, order='F')
             output_path = os.path.join(csv_path, f"{video_name}_{segment}_flattened.csv")
             pd.DataFrame(flattened).to_csv(output_path, index=False, header=False)
@@ -391,7 +402,7 @@ def predict_lite(model, name, csv_path):
         output = model(x_red, x_orange, x_yellow)
         pred = output.item()
     print(f"Predicted Hemoglobin: {pred:.2f} g/dL")
-    return float(pred)*1.2
+    return float(pred)  # Removed the hardcoded 1.2 scaling multiplier
 
 def display_on_lcd(pred, lcd):
     def safe_exit(signum, frame):
