@@ -194,7 +194,7 @@ try:
         logging.error(f"I2C error during prediction display: {e}")
 
     try:
-        pred = predict_lite(model, name, csv_path)
+        pred = predict_lite(model, name, csv_path, vid_path)
     except Exception as e:
         print(f"Error during prediction: {e}")
         logging.error(f"Error during prediction: {e}")

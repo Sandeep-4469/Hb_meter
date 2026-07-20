@@ -364,7 +364,62 @@ def generate_csv(video_path, csv_path, name):
     finally:
         video.release()
 
-def predict_lite(model, name, csv_path):
+def check_finger_present(video_file):
+    """Check if a finger is present on the sensor by analyzing the first frame.
+    
+    Analyzes the center ROI of the first video frame for characteristics
+    typical of a finger placed on the sensor (warm red tones, appropriate
+    brightness). Returns False if the sensor appears empty.
+    """
+    try:
+        video = cv2.VideoCapture(video_file)
+        if not video.isOpened():
+            return False
+        ret, frame = video.read()
+        video.release()
+        if not ret:
+            return False
+        
+        h, w, _ = frame.shape
+        roi_size = min(w, h) // 3
+        roi_top = (h - roi_size) // 2
+        roi_left = (w - roi_size) // 2
+        roi = frame[roi_top:roi_top+roi_size, roi_left:roi_left+roi_size]
+        
+        b_mean = np.mean(roi[:, :, 0])
+        g_mean = np.mean(roi[:, :, 1])
+        r_mean = np.mean(roi[:, :, 2])
+        
+        gray = cv2.cvtColor(roi, cv2.COLOR_BGR2GRAY)
+        gray_mean = np.mean(gray)
+        
+        print(f"[Finger Check] Mean Intensities: R={r_mean:.2f}, G={g_mean:.2f}, B={b_mean:.2f}, Gray={gray_mean:.2f}")
+        
+        # Too dark or too bright means no finger (sensor is uncovered or blocked)
+        if gray_mean < 8 or gray_mean > 230:
+            return False
+            
+        # A finger on sensor should have dominant red channel due to blood/tissue
+        if r_mean < 15 or r_mean < g_mean * 2.0 or r_mean < b_mean * 2.0:
+            return False
+            
+        return True
+    except Exception as e:
+        print(f"[Warning] Failed to check finger: {e}")
+        # Default to True on error to avoid blocking legitimate measurements
+        return True
+
+def predict_lite(model, name, csv_path, video_path=None):
+    # If video_path is provided, check for finger presence before running prediction
+    if video_path:
+        video_file = os.path.join(video_path, f"{name}.mkv")
+        if os.path.exists(video_file):
+            if not check_finger_present(video_file):
+                print("⚠️ No finger detected on the sensor. Setting predicted Hemoglobin to 0.00 g/dL.")
+                return 0.0
+        else:
+            print(f"[Warning] Video file not found for finger check: {video_file}")
+
     segments = ['red', 'orange', 'yellow']
     csv_paths = [os.path.join(csv_path, f"{name}_{segment}_flattened.csv") for segment in segments]
     data_tensors = []
@@ -410,8 +465,12 @@ def display_on_lcd(pred, lcd):
     signal(SIGHUP, safe_exit)
     try:
         lcd.clear()
-        lcd.text("Your Hb level is,", 1)
-        lcd.text(f"{pred:.2f}", 2)
+        if pred == 0.0:
+            lcd.text("Error: No Finger", 1)
+            lcd.text("Try Again", 2)
+        else:
+            lcd.text("Your Hb level is,", 1)
+            lcd.text(f"{pred:.2f}", 2)
         time.sleep(15)
     except OSError as e:
         print(f"I2C error in display_on_lcd: {e}")
